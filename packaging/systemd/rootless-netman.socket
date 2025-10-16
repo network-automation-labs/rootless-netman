@@ -1,0 +1,10 @@
+[Unit]
+Description=Rootless Netman API socket
+
+[Socket]
+ListenStream=/run/systemd/rootless-netman/rootless-netman.sock
+SocketMode=0660
+SocketGroup=rootless-netman
+
+[Install]
+WantedBy=sockets.target

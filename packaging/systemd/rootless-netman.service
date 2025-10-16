@@ -1,0 +1,13 @@
+[Unit]
+Description=Rootless Podman Network Manager
+Requires=rootless-netman.socket
+After=rootless-netman.socket
+
+[Service]
+Delegate=true
+Type=exec
+KillMode=process
+ExecStart=/usr/bin/rootless-netman -server
+
+[Install]
+WantedBy=default.target

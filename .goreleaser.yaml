@@ -1,0 +1,63 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    main: ./cmd/rootless-netman
+    ldflags:
+      - -s -w -X {{ .ModulePath }}.Version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}-{{ if .IsSnapshot }}snapshot{{ else }}{{.Version }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+nfpms:
+  - section: "default"
+    priority: "extra"
+
+    maintainer: "Andrew Bates <abates@omeganetserv.com>"
+    description: |
+      Rootless Network Manager provides a means to connect rootless containers to rootful networks.
+    homepage: "https://github.com/network-automation-labs/netman"
+    license: "Apache-2.0"
+    file_name_template: '{{ .PackageName }}_{{ if .IsSnapshot }}snapshot{{ else }}{{.Version }}{{ end }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
+    scripts:
+      postinstall: ./packaging/postinst.sh
+      preremove: ./packaging/prerm.sh
+      postremove: ./packaging/postrm.sh
+    contents:
+      - src: ./packaging/systemd/rootless-netman.service
+        dst: /usr/lib/systemd/system/rootless-netman.service
+      - src: ./packaging/systemd/rootless-netman.socket
+        dst: /usr/lib/systemd/system/rootless-netman.socket
+      - src: /usr/bin/rootless-netman
+        dst: /usr/lib/netavark/rootless-netman
+        type: "symlink"
+    formats:
+      - deb
+
+release:
+  footer: >-
+
+    ---
+
+    Released by [GoReleaser](https://github.com/goreleaser/goreleaser).
