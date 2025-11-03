@@ -67,6 +67,7 @@ func (p *Plugin) Inspect() {
 		network.Name = config.Name
 		network.ID = config.ID
 		network.Driver = config.Driver
+		network.NetworkInterface = ""
 		p.respond(network)
 	} else {
 		p.Fail(err)
