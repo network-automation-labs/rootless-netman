@@ -108,10 +108,10 @@ func (p *Plugin) Teardown(nsPath string) {
 	// /proc filesystem.
 	err = ns.WithNetNSPath(nsPath, func(_ ns.NetNS) error {
 		logrus.Println("Disconnecting", config.ContainerName, "from", config.Network.Name, "in namespace", nsPath)
-	err = p.Netman.Disconnect(config)
-	if err != nil {
-		p.Fail(err)
-	}
+		err = p.Netman.Disconnect(config)
+		if err != nil {
+			p.Fail(err)
+		}
 		return err
 	})
 }

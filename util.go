@@ -10,16 +10,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
-
-type NullLogger int
-
-func (NullLogger) Println(...any)        {}
-func (NullLogger) Printf(string, ...any) {}
-
-var Logger LogPrinter = NullLogger(0)
 
 func GetLinkNames(namespace netns.NsHandle) (linkNames []string, err error) {
 	linkNames = []string{}
@@ -76,7 +70,7 @@ func GetContainerNSPath(pid int, inode uint64) (string, error) {
 				}
 			}
 		} else if !errors.Is(err, os.ErrPermission) {
-			Logger.Println("Error reading", path, ":", err.Error())
+			logrus.Warn("Error reading", path, ":", err.Error())
 		}
 	}
 	return "", fmt.Errorf("failed to find matching process netns for inode %d", inode)
