@@ -103,11 +103,17 @@ func (p *Plugin) Teardown(nsPath string) {
 	p.readConfig(config)
 	config.ClientPid, config.ContainerNS = p.getContainerNS(nsPath)
 
-	Logger.Println("Disconnecting", config.ContainerName, "from", config.Network.Name, "in namespace", nsPath)
+	// Switch to the target network namespace so that
+	// the server process can find the namespace in the
+	// /proc filesystem.
+	err = ns.WithNetNSPath(nsPath, func(_ ns.NetNS) error {
+		logrus.Println("Disconnecting", config.ContainerName, "from", config.Network.Name, "in namespace", nsPath)
 	err = p.Netman.Disconnect(config)
 	if err != nil {
 		p.Fail(err)
 	}
+		return err
+	})
 }
 
 func (p *Plugin) Info() {
