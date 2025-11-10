@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/sirupsen/logrus"
 	"go.podman.io/common/libnetwork/types"
 )
 
@@ -32,20 +33,20 @@ func NewPlugin(reader io.Reader, writer io.Writer, socketPath string) *Plugin {
 func (p *Plugin) readConfig(v any) {
 	err := p.reader.Decode(v)
 	if err != nil {
-		Logger.Printf("Failed to decode config: %v", err)
+		logrus.Errorf("Failed to decode config: %v", err)
 		p.Fail("Failed to decode config: " + err.Error())
 	}
 }
 
 func (p *Plugin) respond(value interface{}) {
 	if err := p.writer.Encode(value); err != nil {
-		Logger.Println("Failed to encode response:", err.Error())
+		logrus.Errorf("Failed to encode response:", err.Error())
 		os.Exit(1)
 	}
 }
 
 func (p *Plugin) Fail(v ...any) {
-	Logger.Println("Failing with message", v)
+	logrus.Println("Failing with message", v)
 	p.respond(map[string]string{"error": fmt.Sprint(v...)})
 	os.Exit(1)
 }
@@ -85,7 +86,7 @@ func (p *Plugin) Setup(nsPath string) {
 	// the server process can find the namespace in the
 	// /proc filesystem.
 	err = ns.WithNetNSPath(nsPath, func(_ ns.NetNS) error {
-		Logger.Println("Connecting", config.ContainerName, "to", config.Network.Name, "in namespace", nsPath)
+		logrus.Println("Connecting", config.ContainerName, "to", config.Network.Name, "in namespace", nsPath)
 		statusBlock, err = p.Netman.Connect(config)
 		return err
 	})

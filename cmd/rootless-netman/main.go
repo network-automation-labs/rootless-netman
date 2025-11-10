@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/network-automation-labs/netman"
+	"github.com/sirupsen/logrus"
 )
 
 var versionOpt = false
@@ -42,7 +42,7 @@ func plugin(args ...string) {
 		p.Fail("No command provided")
 	}
 	cmd := args[0]
-	netman.Logger.Println("Running command:", cmd)
+	logrus.Println("Running command:", cmd)
 
 	nsPath := ""
 	if cmd == "setup" || cmd == "teardown" {
@@ -50,7 +50,7 @@ func plugin(args ...string) {
 			p.Fail("No namespace path provided")
 		}
 		nsPath = args[1]
-		netman.Logger.Printf("Namespace path: %s", nsPath)
+		logrus.Debugf("Namespace path: %s", nsPath)
 	}
 
 	switch cmd {
@@ -91,8 +91,7 @@ func main() {
 	}
 
 	if debugOpt {
-		logger := log.New(os.Stderr, "rootless-netman: ", log.Ldate|log.Ltime|log.Lshortfile)
-		netman.Logger = logger
+		logrus.SetLevel(logrus.DebugLevel)
 	}
 
 	if serverOpt {

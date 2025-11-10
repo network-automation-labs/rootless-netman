@@ -1,6 +1,7 @@
 package netman
 
 import (
+	"github.com/sirupsen/logrus"
 	"go.podman.io/common/libnetwork/network"
 	"go.podman.io/common/libnetwork/types"
 	"go.podman.io/common/pkg/config"
@@ -56,7 +57,12 @@ func (n *DefaultNetman) Inspect(name string) (types.Network, error) {
 func (n *DefaultNetman) Disconnect(options *TeardownNetworkOptions) error {
 	nspath, err := GetContainerNSPath(options.ClientPid, options.ContainerNS)
 	if err == nil {
-		return n.Teardown(nspath, types.TeardownOptions{NetworkOptions: getSetupOptions(&options.SetupNetworkOptions)})
+		networkOptions := getSetupOptions(&options.SetupNetworkOptions)
+		logrus.Debugf("Disconnecting %s from %s: %+v", options.ContainerName, options.Network.Name, networkOptions)
+		return n.Teardown(nspath, types.TeardownOptions{NetworkOptions: networkOptions})
+	}
+	if err != nil {
+		logrus.Errorf("Failed disconnect container %v", err)
 	}
 	return err
 }
@@ -64,10 +70,13 @@ func (n *DefaultNetman) Disconnect(options *TeardownNetworkOptions) error {
 func (n *DefaultNetman) Connect(options *SetupNetworkOptions) (statusBlock types.StatusBlock, err error) {
 	nspath, err := GetContainerNSPath(options.ClientPid, options.ContainerNS)
 	if err == nil {
+		logrus.Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)
 		var statusBlocks map[string]types.StatusBlock
 		statusBlocks, err = n.Setup(nspath, types.SetupOptions{NetworkOptions: getSetupOptions(options)})
 		statusBlock = statusBlocks[options.Network.Name]
 	}
-
+	if err != nil {
+		logrus.Errorf("Failed to connect container %v", err)
+	}
 	return statusBlock, err
 }

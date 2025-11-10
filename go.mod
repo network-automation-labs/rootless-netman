@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/containernetworking/plugins v1.7.1
 	github.com/coreos/go-systemd/v22 v22.6.0
+	github.com/sirupsen/logrus v1.9.3
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	go.podman.io/common v0.65.0
@@ -292,7 +293,6 @@ require (
 	github.com/sigstore/sigstore v1.9.5 // indirect
 	github.com/sigstore/sigstore-go v0.7.1 // indirect
 	github.com/sigstore/timestamp-authority v1.2.5 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/slack-go/slack v0.17.3 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
