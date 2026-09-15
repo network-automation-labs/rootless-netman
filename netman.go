@@ -70,7 +70,10 @@ func (n *DefaultNetman) Disconnect(options *TeardownNetworkOptions) error {
 func (n *DefaultNetman) Connect(options *SetupNetworkOptions) (statusBlock types.StatusBlock, err error) {
 	nspath, err := GetContainerNSPath(options.ClientPid, options.ContainerNS)
 	if err == nil {
-		logrus.Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)
+			logrus.Debugf("Connect options received: %+v", options)
+		}
 		var statusBlocks map[string]types.StatusBlock
 		statusBlocks, err = n.Setup(nspath, types.SetupOptions{NetworkOptions: getSetupOptions(options)})
 		statusBlock = statusBlocks[options.Network.Name]
