@@ -15,11 +15,17 @@ type Netman interface {
 	Disconnect(options *TeardownNetworkOptions) error
 }
 
-type DefaultNetman struct {
+type Backend interface {
+	Inspect(name string) (types.Network, error)
+	Connect(clientPid int, options *SetupNetworkOptions) (statusBlock types.StatusBlock, err error)
+	Disconnect(clientPid int, options *TeardownNetworkOptions) error
+}
+
+type netmanBackend struct {
 	types.ContainerNetwork
 }
 
-func NewNetman() (*DefaultNetman, error) {
+func NewNetman() (*netmanBackend, error) {
 	storageOptions, err := storage.DefaultStoreOptions()
 	if err != nil {
 		return nil, err
@@ -37,7 +43,7 @@ func NewNetman() (*DefaultNetman, error) {
 
 	_, netInterface, err := network.NetworkBackend(store, conf, false)
 
-	return &DefaultNetman{ContainerNetwork: netInterface}, err
+	return &netmanBackend{ContainerNetwork: netInterface}, err
 }
 
 func getSetupOptions(options *SetupNetworkOptions) types.NetworkOptions {
@@ -50,25 +56,24 @@ func getSetupOptions(options *SetupNetworkOptions) types.NetworkOptions {
 	}
 }
 
-func (n *DefaultNetman) Inspect(name string) (types.Network, error) {
+func (n *netmanBackend) Inspect(name string) (types.Network, error) {
 	return n.NetworkInspect(name)
 }
 
-func (n *DefaultNetman) Disconnect(options *TeardownNetworkOptions) error {
-	nspath, err := GetContainerNSPath(options.ClientPid, options.ContainerNS)
+func (n *netmanBackend) Disconnect(clientPid int, options *TeardownNetworkOptions) error {
+	nspath, err := GetContainerNSPath(clientPid, options.ContainerNS)
 	if err == nil {
 		networkOptions := getSetupOptions(&options.SetupNetworkOptions)
 		logrus.Debugf("Disconnecting %s from %s: %+v", options.ContainerName, options.Network.Name, networkOptions)
 		return n.Teardown(nspath, types.TeardownOptions{NetworkOptions: networkOptions})
-	}
-	if err != nil {
+	} else {
 		logrus.Errorf("Failed disconnect container %v", err)
 	}
 	return err
 }
 
-func (n *DefaultNetman) Connect(options *SetupNetworkOptions) (statusBlock types.StatusBlock, err error) {
-	nspath, err := GetContainerNSPath(options.ClientPid, options.ContainerNS)
+func (n *netmanBackend) Connect(clientPid int, options *SetupNetworkOptions) (statusBlock types.StatusBlock, err error) {
+	nspath, err := GetContainerNSPath(clientPid, options.ContainerNS)
 	if err == nil {
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			logrus.Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)

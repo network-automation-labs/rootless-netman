@@ -8,17 +8,18 @@ import (
 	"syscall"
 
 	"github.com/coreos/go-systemd/v22/activation"
+	"github.com/sirupsen/logrus"
 	"go.podman.io/common/libnetwork/types"
 )
 
 type Server struct {
-	Netman
+	backend Backend
 }
 
 func NewServer() (*Server, error) {
 	netman, err := NewNetman()
 	return &Server{
-		Netman: netman,
+		backend: netman,
 	}, err
 }
 
@@ -51,24 +52,57 @@ func (s *Server) ServeUnix(socketPath string) error {
 }
 
 func (s *Server) Serve(listener net.Listener) error {
-	server := rpc.NewServer()
-	err := server.RegisterName("Netman", s)
-	if err == nil {
-		server.Accept(listener)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+
+		go func(conn net.Conn) {
+			defer conn.Close()
+
+			cred, err := PeerCredentials(conn)
+			if err != nil {
+				logrus.Errorf("Rejecting connection: failed to verify peer credentials: %v", err)
+				return
+			}
+
+			handler := &NetmanReceiver{
+				backend: s.backend,
+				peerPid: int(cred.Pid),
+			}
+
+			rpcServer := rpc.NewServer()
+			if err := rpcServer.RegisterName("Netman", handler); err != nil {
+				logrus.Errorf("Failed to register RPC handler: %v", err)
+				return
+			}
+
+			logrus.Debugf("Accepted connection from uid=%d pid=%d", cred.Uid, cred.Pid)
+			rpcServer.ServeConn(conn)
+		}(conn)
 	}
+}
+
+// NetmanReceiver serves the Netman RPCs for a single connection,
+// carrying the kernel-verified identity (via SO_PEERCRED) of the process on
+// the other end. peerPid, not any client-supplied PID, is what gets used to
+// resolve which network namespace a Connect/Disconnect call may touch.
+type NetmanReceiver struct {
+	backend Backend
+	peerPid int
+}
+
+func (h *NetmanReceiver) Connect(options SetupNetworkOptions, statusBlock *types.StatusBlock) (err error) {
+	*statusBlock, err = h.backend.Connect(h.peerPid, &options)
 	return err
 }
 
-func (s *Server) Connect(options SetupNetworkOptions, statusBlock *types.StatusBlock) (err error) {
-	*statusBlock, err = s.Netman.Connect(&options)
-	return err
+func (h *NetmanReceiver) Disconnect(options TeardownNetworkOptions, _ *struct{}) error {
+	return h.backend.Disconnect(h.peerPid, &options)
 }
 
-func (s *Server) Disconnect(options TeardownNetworkOptions, _ *struct{}) error {
-	return s.Netman.Disconnect(&options)
-}
-
-func (s *Server) Inspect(name string, network *types.Network) (err error) {
-	*network, err = s.Netman.Inspect(name)
+func (h *NetmanReceiver) Inspect(name string, network *types.Network) (err error) {
+	*network, err = h.backend.Inspect(name)
 	return err
 }

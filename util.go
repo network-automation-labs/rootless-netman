@@ -3,6 +3,7 @@ package netman
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,6 +88,31 @@ func GetNsInode(nsPath string) (inode uint64, err error) {
 		}
 	}
 	return
+}
+
+// PeerCredentials returns the kernel-verified UID/PID/GID of the process on
+// the other end of a Unix domain socket connection, via SO_PEERCRED. This
+// must be used instead of trusting any PID/UID a client sends over the wire.
+func PeerCredentials(conn net.Conn) (*syscall.Ucred, error) {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return nil, fmt.Errorf("connection is not a unix socket")
+	}
+
+	raw, err := unixConn.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+
+	var cred *syscall.Ucred
+	var credErr error
+	err = raw.Control(func(fd uintptr) {
+		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cred, credErr
 }
 
 func TranslateContainerNSPath(pid int, containerNsPath string) (string, error) {

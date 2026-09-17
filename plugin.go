@@ -40,7 +40,7 @@ func (p *Plugin) readConfig(v any) {
 
 func (p *Plugin) respond(value interface{}) {
 	if err := p.writer.Encode(value); err != nil {
-		logrus.Errorf("Failed to encode response:", err.Error())
+		logrus.Errorf("Failed to encode response: %s", err.Error())
 		os.Exit(1)
 	}
 }
@@ -51,8 +51,7 @@ func (p *Plugin) Fail(v ...any) {
 	os.Exit(1)
 }
 
-func (p *Plugin) getContainerNS(nsPath string) (pid int, inode uint64) {
-	pid = os.Getpid()
+func (p *Plugin) getContainerNS(nsPath string) (inode uint64) {
 	inode, err := GetNsInode(nsPath)
 	if err != nil {
 		p.Fail(err)
@@ -79,7 +78,7 @@ func (p *Plugin) Setup(nsPath string) {
 	var err error
 	config := &SetupNetworkOptions{}
 	p.readConfig(config)
-	config.ClientPid, config.ContainerNS = p.getContainerNS(nsPath)
+	config.ContainerNS = p.getContainerNS(nsPath)
 
 	var statusBlock types.StatusBlock
 	// Switch to the target network namespace so that
@@ -101,7 +100,7 @@ func (p *Plugin) Teardown(nsPath string) {
 	var err error
 	config := &TeardownNetworkOptions{}
 	p.readConfig(config)
-	config.ClientPid, config.ContainerNS = p.getContainerNS(nsPath)
+	config.ContainerNS = p.getContainerNS(nsPath)
 
 	// Switch to the target network namespace so that
 	// the server process can find the namespace in the
