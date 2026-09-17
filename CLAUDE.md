@@ -28,7 +28,7 @@ own unprivileged user account.
      `pesto --delete`), instead of the default `rootlessport` userspace
      proxy.
 - **"Kernel-level forwarding" ≠ privileged.** Pasta runs entirely
-  unprivileged. "Kernel-level" refers to the *data path*: for local/loopback
+  unprivileged. "Kernel-level" refers to the _data path_: for local/loopback
   connections pasta uses `splice(2)` / `recvmmsg(2)`/`sendmmsg(2)` to move
   bytes directly between kernel-held sockets (zero-copy, no userspace
   relay), and for external traffic it translates a tap-device L2 interface
@@ -37,7 +37,7 @@ own unprivileged user account.
   accept-and-relay proxy (two separate connections stitched together in
   userspace, hence source IP becomes `127.0.0.1`).
 - **Port-forwarding defaults:** Podman always passes `-t none -u none
-  -T none -U none` to pasta unless a container explicitly requests
+-T none -U none` to pasta unless a container explicitly requests
   `-p`/`--publish`, which disables pasta's native "scan /proc and
   auto-forward any listening port" behavior. Only explicitly published
   ports get forwarded.
@@ -85,15 +85,17 @@ Raised as things to verify/harden, not blockers:
    Recommended: use `SO_PEERCRED` on the Unix socket to get the
    kernel-verified UID/PID of the caller, and only allow operations against
    namespaces actually owned by that UID.
+   **Fixed 2026-09-17 — see "Code audit findings" § 1 below for details.**
 2. **L2/L3 isolation between tenants.** Bridging every rootless user's veth
    onto the same `podman1` bridge as rootful Traefik puts them all in one
    broadcast domain. Without extra isolation (bridge port isolation via
    `bridge link set <if> isolated on`, per-tenant VLAN tagging, or nftables
    rules), tenants' containers can potentially reach/ARP-spoof each other
    directly. Worth deciding whether this matters for the threat model.
+   **Fixed 2026-09-17 — see "Code audit findings" § 2 below for details.**
 3. **Lifecycle/cleanup robustness.** Confirm the daemon reliably tears down
    veth pairs when a rootless netns disappears (container removed, `compose
-   down`, user logout, crash) to avoid leaked veth ends/bridge ports.
+down`, user logout, crash) to avoid leaked veth ends/bridge ports.
    Also consider races from concurrent `compose up/down` across users.
 4. Noted for context: upstream Podman networking docs already recognize
    "pasta + custom network" as a valid combination, and there's active
@@ -108,45 +110,120 @@ Full read-through of every `.go` file in the repo (`server.go`, `client.go`,
 `netman.go`, `util.go`, `plugin.go`, `cmd/rootless-netman/main.go`,
 `types.go`, `const.go`) against the four concerns above. Status per item:
 
-1. **Root daemon authorization — unaddressed, and exploitable as written.**
+1. **Root daemon authorization — FIXED (2026-09-17).**
+
+   **Original finding (exploitable as written):**
    - `server.go` (`ServeUnix`): the socket is created `0770` and chowned to
-     the *group* of the socket directory, not root-only — any user in that
+     the _group_ of the socket directory, not root-only — any user in that
      group can dial it.
    - No `SO_PEERCRED` call anywhere in `server.go`. The RPC methods
-     (`Connect`, `Disconnect`, `Inspect`) act on whatever the client sends,
+     (`Connect`, `Disconnect`, `Inspect`) acted on whatever the client sent,
      with no kernel-verified caller identity.
-   - The "identity" of the target namespace is entirely client-supplied:
-     `types.go` (`SetupNetworkOptions.ClientPid` / `.ContainerNS`) are plain
-     ints in the RPC payload; `plugin.go` (`getContainerNS`) has the
-     *client* set `ClientPid = os.Getpid()` and `ContainerNS` = the target
-     netns inode, then ships both to the server; `netman.go`
-     (`Connect`/`Disconnect`) and `util.go` (`GetContainerNSPath`) have the
+   - The "identity" of the target namespace was entirely client-supplied:
+     `types.go`'s `SetupNetworkOptions.ClientPid` / `.ContainerNS` were
+     plain ints in the RPC payload; `plugin.go`'s `getContainerNS` had the
+     _client_ set `ClientPid = os.Getpid()` and `ContainerNS` = the target
+     netns inode, then shipped both to the server; `netman.go`
+     (`Connect`/`Disconnect`) and `util.go` (`GetContainerNSPath`) had the
      server `Glob("/proc/<ClientPid>/ns/net")` and match on inode, for both
-     connect *and* disconnect. Since the daemon runs as root, it can
+     connect _and_ disconnect. Since the daemon runs as root, it could
      resolve any PID on the host, not just ones owned by the caller.
-   - **Impact:** any user in the socket's group can call
+   - **Impact:** any user in the socket's group could call
      `Netman.Connect`/`Netman.Disconnect` with a `ClientPid`/`ContainerNS`
      pair pointing at a namespace they don't own (another tenant's
      container, or a guessed/enumerated PID+inode), and get the root daemon
      to bridge a veth into it or tear down another tenant's network. Also
-     racy even for legitimate use: `ClientPid` is captured before the
-     client calls `setns`, giving a TOCTOU window plus ordinary PID-reuse
+     racy even for legitimate use: `ClientPid` was captured before the
+     client called `setns`, giving a TOCTOU window plus ordinary PID-reuse
      risk.
-   - **Fix direction:** get the real peer UID/PID via `SO_PEERCRED` on the
-     `net.Conn` right after `Accept`, ignore client-supplied `ClientPid`,
-     and verify server-side that the resolved namespace is actually owned
-     by (or a descendant of) the verified peer UID before touching it.
 
-2. **L2/L3 tenant isolation — not implemented in this repo.** No
-   bridge-isolation, VLAN, or nftables logic anywhere in the codebase;
-   `Connect`/`Disconnect` just forward to the vendored
-   `go.podman.io/common/libnetwork/network` backend (`n.Setup`/`n.Teardown`
-   in `netman.go`), which is external to this repo. No `PerNetworkOptions`
-   or driver-specific fields request port isolation/VLAN tags/nftables
-   rules. Every tenant's veth on the shared rootful bridge is in one flat
-   broadcast domain by default. Combined with #1, this is worse than a
-   passive shared-L2 risk: an unauthorized party can also actively
-   attach/detach into it.
+   **Fix implemented:**
+   - `util.go` adds `PeerCredentials(conn net.Conn) (*syscall.Ucred, error)`,
+     wrapping `SO_PEERCRED` via `SyscallConn`/`GetsockoptUcred` to get the
+     kernel-verified UID/PID/GID of a Unix socket peer.
+   - `server.go`'s `Serve` no longer hands the listener to a single shared
+     `net/rpc` receiver. It accepts connections in a loop and, per
+     connection, calls `PeerCredentials` before registering any RPCs;
+     unverifiable connections are dropped. Each connection gets its own
+     `NetmanReceiver`, bound to that verified peer pid, registered on a
+     fresh `rpc.Server`.
+   - `netman.go` splits the old single `Netman` interface into a
+     client-facing `Netman` (used by `Client`/`Plugin`, unchanged shape) and
+     a server-side `Backend` interface whose `Connect`/`Disconnect` take the
+     verified pid as an explicit `clientPid int` parameter — the compiler
+     now enforces that the pid comes from the authenticated connection, not
+     from client-controlled input. `netmanBackend` implements `Backend`.
+   - `types.go`'s `SetupNetworkOptions.ClientPid` field is removed
+     entirely — there's no client-supplied pid left to trust or ignore.
+     `plugin.go`'s `getContainerNS` now only resolves the netns inode.
+   - `server.go`'s `Server` holds its `Backend` as a named field
+     (`backend Backend`), not embedded, so `Connect`/`Disconnect`/`Inspect`
+     are never promoted as unauthenticated public methods reachable outside
+     the per-connection RPC path.
+   - Covered by `server_test.go` (`TestServerConnectUsesVerifiedPeerPid`,
+     `TestServerDisconnectUsesVerifiedPeerPid`, using a `fakeBackend`) and
+     `util_test.go` (`TestPeerCredentials`).
+   - Socket permissions (`0770`, group-chowned) were deliberately left
+     unchanged: once every RPC call is authorized per-connection against the
+     kernel-verified peer, broad group access to the socket is no longer
+     sufficient to touch another tenant's namespace, so it wasn't part of
+     this fix.
+
+2. **L2/L3 tenant isolation — FIXED (2026-09-17).**
+
+   **Original finding:** No bridge-isolation, VLAN, or nftables logic
+   anywhere in the codebase; `Connect`/`Disconnect` just forwarded to the
+   vendored `go.podman.io/common/libnetwork/network` backend
+   (`n.Setup`/`n.Teardown` in `netman.go`), which is external to this repo
+   and returns no host-side veth information. No `PerNetworkOptions` or
+   driver-specific fields requested port isolation/VLAN tags/nftables
+   rules. Every tenant's veth on the shared rootful bridge sat in one flat
+   broadcast domain by default. Before the #1 fix, this was worse than a
+   passive shared-L2 risk, since an unauthorized party could also actively
+   attach/detach into it; after #1, it was back to a passive shared-L2
+   exposure between legitimately-connected tenants only.
+
+   **Fix implemented:** rootless tenants can reach the rootful side of the
+   bridge (Traefik) but never each other, using Linux bridge port
+   isolation — not VLANs or nftables, since `n.Setup` never exposes the
+   host-side interface name and the isolated-port flag is a single netlink
+   call.
+   - `util.go` adds `IsolateContainerInterfaces(nsPath string,
+containerInterfaceNames []string) error`: for each named interface
+     inside the tenant's netns, it resolves the interface's veth peer via
+     `Attrs().ParentIndex` (the kernel-populated `IFLA_LINK`, which points
+     at the peer's ifindex in the daemon's own root namespace once `Setup`
+     has moved it there), looks that peer up with `netlink.LinkByIndex`,
+     and calls `netlink.LinkSetIsolated(hostLink, true)` — an isolated
+     bridge port can only forward to non-isolated ports (e.g. Traefik's),
+     never to another isolated port.
+   - `netman.go`'s `(*netmanBackend).Connect` calls
+     `IsolateContainerInterfaces(nspath,
+slices.Collect(maps.Keys(statusBlock.Interfaces)))` immediately after
+     a successful `n.Setup`. On any isolation failure it calls `n.Teardown`
+     to roll back what `Setup` just created and returns the error instead
+     of the status block — fail closed, a tenant is never left
+     connected-but-unisolated.
+   - Unconditional and not configurable: every `Connect` this daemon
+     handles is by construction a tenant network on the custom driver, so
+     isolation applies every time, with no compose-level opt-out. Rootful
+     containers on `podman1` (Traefik) are never marked isolated and
+     remain reachable from every tenant, by design — cross-tenant
+     connectivity, if ever needed, is explicitly out of scope for this
+     daemon and left to a separate solution.
+   - Covered by `util_test.go`
+     (`TestFindNetInterfaceLinkAndIsolateHostPeer`), which builds a real
+     veth pair and bridge and asserts the host-side port ends up isolated.
+     Requires root/`CAP_NET_ADMIN` (self-skips otherwise, matching this
+     daemon's own privilege requirements) — not yet exercised against real
+     privileges in a sandboxed dev environment; run it with `sudo` before
+     relying on it in CI.
+   - Two review-round bugs caught and fixed before landing: an early draft
+     returned a misleading "no veth peer index" error that was immediately
+     overwritten by the next statement, and a later draft silently
+     discarded `netlink.LinkSetIsolated`'s error (which would have
+     defeated the fail-closed guarantee above). Both are fixed in the
+     current code.
 
 3. **Lifecycle/cleanup robustness — no daemon-side reconciliation.**
    `Disconnect`/`Teardown` (`netman.go`, `plugin.go`) only run when the
@@ -163,9 +240,13 @@ Full read-through of every `.go` file in the repo (`server.go`, `client.go`,
 
 4. Upstream pasta/pesto tracking — not applicable to a code review.
 
-**Bottom line:** #1 is a live, concretely exploitable authorization bypass
-(not just a hardening gap) — prioritize the `SO_PEERCRED` fix before this
-is used with more than one real tenant.
+**Bottom line:** #1 was a live, concretely exploitable authorization bypass
+(not just a hardening gap) — fixed 2026-09-17 via `SO_PEERCRED`-based
+per-connection authentication. #2 (shared L2 with no isolation between
+tenants) was the next-highest-priority item once #1 closed the
+unauthorized-attach path, and is also fixed 2026-09-17 via bridge port
+isolation. #3 (lifecycle/cleanup robustness) remains open and is now the
+highest-priority remaining item.
 
 ## Next steps
 
@@ -178,12 +259,13 @@ is used with more than one real tenant.
       `-p`/`ports:` at all, or whether all external exposure should route
       exclusively through the custom bridged network + Traefik (simplest,
       avoids any pasta/custom-driver conflict).
-- [ ] Add UID/PID verification (`SO_PEERCRED`) to the root daemon's request
-      handling — confirmed missing by code audit (2026-09-15); see
-      "Code audit findings" above.
-- [ ] Decide on and implement a tenant isolation strategy on the shared
+- [x] Add UID/PID verification (`SO_PEERCRED`) to the root daemon's request
+      handling — confirmed missing by code audit (2026-09-15); fixed
+      2026-09-17; see "Code audit findings" above.
+- [x] Decide on and implement a tenant isolation strategy on the shared
       bridge (port isolation, VLANs, or nftables) if cross-tenant traffic is
-      undesired.
+      undesired — implemented via Linux bridge port isolation; confirmed
+      missing by code audit (2026-09-15); fixed 2026-09-17; see "Code audit
+      findings" above.
 - [ ] Audit daemon cleanup path for veth/bridge-port leaks on container/netns
       teardown.
-

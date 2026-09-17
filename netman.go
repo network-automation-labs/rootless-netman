@@ -1,6 +1,9 @@
 package netman
 
 import (
+	"maps"
+	"slices"
+
 	"github.com/sirupsen/logrus"
 	"go.podman.io/common/libnetwork/network"
 	"go.podman.io/common/libnetwork/types"
@@ -79,9 +82,21 @@ func (n *netmanBackend) Connect(clientPid int, options *SetupNetworkOptions) (st
 			logrus.Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)
 			logrus.Debugf("Connect options received: %+v", options)
 		}
+		networkOptions := getSetupOptions(options)
 		var statusBlocks map[string]types.StatusBlock
-		statusBlocks, err = n.Setup(nspath, types.SetupOptions{NetworkOptions: getSetupOptions(options)})
+		statusBlocks, err = n.Setup(nspath, types.SetupOptions{NetworkOptions: networkOptions})
 		statusBlock = statusBlocks[options.Network.Name]
+
+		if err == nil {
+			err = IsolateContainerInterfaces(nspath, slices.Collect(maps.Keys(statusBlock.Interfaces)))
+			if err != nil {
+				logrus.Errorf("Failed to isolate %s, tearing down: %v", options.ContainerName, err)
+				if teardownErr := n.Teardown(nspath, types.TeardownOptions{NetworkOptions: networkOptions}); teardownErr != nil {
+					logrus.Errorf("Failed to tear down %s after isolation failure: %v", options.ContainerName, teardownErr)
+				}
+				statusBlock = types.StatusBlock{}
+			}
+		}
 	}
 	if err != nil {
 		logrus.Errorf("Failed to connect container %v", err)

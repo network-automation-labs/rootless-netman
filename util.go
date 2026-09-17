@@ -16,17 +16,38 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-func GetLinkNames(namespace netns.NsHandle) (linkNames []string, err error) {
-	linkNames = []string{}
+func IsolateContainerInterfaces(nsPath string, containerInterfaceNames []string) error {
+	var hostLink netlink.Link
+	namespace, err := netns.GetFromPath(nsPath)
+	if err != nil {
+		return err
+	}
+	defer namespace.Close()
+
 	handle, err := netlink.NewHandleAt(namespace)
-	if err == nil {
-		var links []netlink.Link
-		links, err = handle.LinkList()
-		for _, link := range links {
-			linkNames = append(linkNames, link.Attrs().Name)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+
+	for _, name := range containerInterfaceNames {
+		link, err := handle.LinkByName(name)
+		if err == nil {
+			peerIndex := link.Attrs().ParentIndex
+			if peerIndex == 0 {
+				return fmt.Errorf("interface %s has no veth peer index", link.Attrs().Name)
+			}
+			hostLink, err = netlink.LinkByIndex(peerIndex)
+			if err == nil {
+				err = netlink.LinkSetIsolated(hostLink, true)
+			}
+		}
+
+		if err != nil {
+			return err
 		}
 	}
-	return linkNames, err
+	return nil
 }
 
 func GetNextEthName(linkNames []string) (ethName string) {
