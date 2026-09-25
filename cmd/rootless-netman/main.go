@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/network-automation-labs/netman"
 	"github.com/sirupsen/logrus"
@@ -14,16 +15,18 @@ var versionOpt = false
 var debugOpt = false
 var serverOpt = false
 var textModeOpt = false
+var cleanupIntervalSeconds = 0
 
 func init() {
 	flag.BoolVar(&versionOpt, "version", false, "print version and exit")
 	flag.BoolVar(&debugOpt, "debug", false, "turn on debug logging")
 	flag.BoolVar(&serverOpt, "server", false, "run in server mode")
 	flag.BoolVar(&textModeOpt, "text", false, "run in text mode")
+	flag.IntVar(&cleanupIntervalSeconds, "cleanup-interval", int(netman.DefaultCleanupInterval/time.Second), "Interval (in seconds) for cleanup loop to run (only for server mode)")
 }
 
 func server() {
-	server, err := netman.NewServer()
+	server, err := netman.NewServer(time.Duration(time.Second) * time.Duration(cleanupIntervalSeconds))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot create server: %v\n", err)
 		os.Exit(1)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/sirupsen/logrus"
@@ -16,11 +17,14 @@ type Server struct {
 	backend Backend
 }
 
-func NewServer() (*Server, error) {
-	netman, err := NewNetman()
-	return &Server{
-		backend: netman,
-	}, err
+func NewServer(cleanupInterval time.Duration) (server *Server, err error) {
+	netman, err := NewNetman(CleanupInterval(cleanupInterval))
+	if err == nil {
+		server = &Server{
+			backend: netman,
+		}
+	}
+	return
 }
 
 func (s *Server) ServeSystemd() error {

@@ -97,6 +97,10 @@ Raised as things to verify/harden, not blockers:
    veth pairs when a rootless netns disappears (container removed, `compose
 down`, user logout, crash) to avoid leaked veth ends/bridge ports.
    Also consider races from concurrent `compose up/down` across users.
+   **Functionally fixed as of 2026-09-25 — see "Code audit findings" § 3
+   below; unprivileged unit tests landed 2026-09-25, but root-gated
+   kernel-side tests and a startup-time orphan sweep remain open, see "Next
+   steps".**
 4. Noted for context: upstream Podman networking docs already recognize
    "pasta + custom network" as a valid combination, and there's active
    upstream work (PR for `rootless_port_forwarder="pasta"` /
@@ -225,18 +229,143 @@ slices.Collect(maps.Keys(statusBlock.Interfaces)))` immediately after
      defeated the fail-closed guarantee above). Both are fixed in the
      current code.
 
-3. **Lifecycle/cleanup robustness — no daemon-side reconciliation.**
-   `Disconnect`/`Teardown` (`netman.go`, `plugin.go`) only run when the
-   netavark plugin protocol explicitly invokes `teardown`; there's no
-   daemon-side watcher (inotify on `/run/netns`, netlink namespace-removal
-   notification, or periodic reconciliation) that detects a rootless netns
-   disappearing without a clean teardown call (crash, `kill -9`, OOM,
-   abrupt logout), and no startup-time orphan sweep in `main.go`/`server.go`.
-   The `net/rpc` server also serves requests concurrently by default with
-   no visible locking around the shared `storage.GetStore` state used by
-   all tenants (`netman.go`) — concurrency safety here is unverified rather
-   than confirmed, since the actual store locking (if any) lives in the
-   vendored `go.podman.io/common` dependency, outside this repo.
+3. **Lifecycle/cleanup robustness — FIXED (2026-09-17, revised through 2026-09-25).**
+
+   **Original finding:** `Disconnect`/`Teardown` (`netman.go`, `plugin.go`)
+   only ran when the netavark plugin protocol explicitly invoked `teardown`;
+   there was no daemon-side watcher (inotify on `/run/netns`, netlink
+   namespace-removal notification, or periodic reconciliation) that detected
+   a rootless netns disappearing without a clean teardown call (crash,
+   `kill -9`, OOM, abrupt logout), and no startup-time orphan sweep in
+   `main.go`/`server.go`. The `net/rpc` server also serves requests
+   concurrently by default with no visible locking around the shared
+   `storage.GetStore` state used by all tenants.
+
+   Investigation confirmed the leak is real: the container/tenant netns this
+   daemon bridges into is a persistent, bind-mounted namespace file (e.g.
+   `/run/netns/<name>`), not a `/proc/<pid>/ns/net` reference tied to a live
+   process. Kernel veth-pair semantics mean a *fully completed* teardown
+   never strands a host-side interface (destroying the namespace
+   cascade-deletes both veth ends), but if nothing ever successfully calls
+   this daemon's `Disconnect` — e.g. conmon itself is killed before running
+   its exit-cmd, or (more specific to this daemon) the plugin's RPC to this
+   privileged root daemon fails because the daemon happened to be down at
+   that moment — the bind-mounted netns file plus its veth/bridge port can
+   persist indefinitely with nothing left to trigger cleanup. Podman's own
+   default networking has the identical structural problem and solves it
+   with file-based refcounting plus lazy self-healing rather than a
+   background watcher (`go.podman.io/common`'s
+   `libnetwork/internal/rootlessnetns`), but that doesn't fully cover this
+   daemon: a failed teardown call there is silently absorbed once the
+   container record is removed, and none of it has any visibility into this
+   daemon's own veth/bridge/isolation state regardless.
+
+   **Current design (as implemented):**
+   - `state.go` defines a `StateStore` interface (`Put`, `Get`, `Delete`,
+     `GetLinks`) backed by `stateStore`, a `map[string]ContainerLinks` keyed
+     by `ContainerID + "/" + Network.Name`, persisted to
+     `/run/rootless-netman/state.json` via atomic temp-file-then-rename on
+     every mutation (`NetmanStateDir`/`NetmanStatePath`, `const.go`).
+     `loadStateStore` tolerates a missing file (starts empty) and a corrupt
+     one (logs and starts empty) without failing daemon startup.
+   - `links.go` defines `ContainerLinks` (`Options`, `NSPath`, `NSInode`,
+     `Interfaces`), the record `Connect` stores for later reconciliation, with
+     `Isolate()` (bridge-port isolation, moved here from `util.go`'s old
+     `IsolateContainerInterfaces`) and `Exists()` (namespace-inode check via
+     `GetNsInode`, then per-interface existence via `netns.GetFromPath` +
+     `netlink.NewHandleAt` + `LinkByName`).
+   - `netmanBackend` (`netman.go`) holds `containerNetwork
+     types.ContainerNetwork`, `state StateStore`, `cleanupInterval
+     time.Duration`, and a `mu sync.Mutex` serializing every
+     `Setup`/`Teardown` call plus the state mutation around it, across
+     `Connect`, `Disconnect`, and `cleanup` — the in-process analogue of
+     netavark's own `lockfile.LockFile` (which only exists because podman has
+     no single resident process to hold an in-memory lock in).
+     `cleanupInterval` is set via the `Option`/`CleanupInterval(interval)
+     Option` functional-options pattern, which rejects `interval <= 0` so a
+     bad `-cleanup-interval` value fails `NewNetman`/`NewServer` cleanly
+     instead of later panicking `time.NewTicker` with a non-positive
+     duration.
+   - `NewNetman` loads the state store, applies options, and starts
+     `go backend.cleanupLoop()` — a `time.Ticker`-driven goroutine (no stop
+     channel, matching the daemon's long-running systemd lifecycle) that
+     walks `state.GetLinks()` every `cleanupInterval` (`DefaultCleanupInterval`
+     = 60s, `const.go`) and calls `cleanup(conn)` for anything `!conn.Exists()`.
+     `cleanup` always attempts `Teardown` even when the namespace looks fully
+     gone — netavark's own IP allocations live in an IPAM db keyed
+     independent of namespace existence (`deallocIPs`, `go.podman.io/common`'s
+     `libnetwork/netavark/run.go`), so skipping the call would leak that
+     reservation — and drops the record unconditionally afterward regardless
+     of the `Teardown` result. There is currently no startup-time sweep
+     before `cleanupLoop`'s first tick; a restart's orphans wait up to one
+     `cleanupInterval` before being reconciled.
+   - **NSPath is a pinned bind mount, not a `/proc/<pid>/ns/net` reference —
+     this was a real bug caught during implementation, not just a hardening
+     choice.** `Connect`'s RPC caller is a one-shot `rootless-netman
+     setup`/`teardown` CLI invocation (`plugin.go`) that exits almost
+     immediately after the call returns; the daemon resolves it via
+     `GetContainerNSPath(clientPid, options.ContainerNS)` (`util.go`), which
+     returns the literal string `/proc/<clientPid>/ns/net`. That's safe to
+     use for the *synchronous* Setup/Teardown call (the plugin process is
+     guaranteed alive and `setns()`'d into the namespace for the RPC's
+     duration), but an earlier revision persisted that same ephemeral string
+     into `ContainerLinks.NSPath` for the *reconciler* to reuse much later —
+     once the plugin pid was reaped and recycled by the kernel to an
+     unrelated process, `cleanup`'s `Teardown` call would have operated
+     against whatever namespace that recycled pid currently belonged to. Now
+     fixed: `Connect` immediately pins the verified `/proc/<pid>/ns/net` via
+     `podmannetns.NewNSFrom` (`go.podman.io/common/pkg/netns`, the same
+     bind-mount-pinning helper podman's own `rootlessnetns` package uses
+     internally) and uses that durable path — never the ephemeral one — for
+     `Setup`, `Isolate`, the stored `NSInode`, and `ContainerLinks.NSPath`.
+     A `tracked` flag plus a deferred `podmannetns.UnmountNS` releases the
+     pin on any failure path (`Setup` failure, isolation failure, inode-read
+     failure) so nothing leaks when a connection never makes it into state.
+   - **Fixing NSPath also required closing a cross-tenant authorization gap
+     in `Disconnect`.** Once `Disconnect` could use a tracked connection's
+     pinned path instead of re-deriving one, matching purely on the
+     client-supplied `ContainerID`/`Network.Name` strings would have let any
+     authenticated caller name another tenant's `ContainerID`/`Network` and
+     get the daemon to tear down and unmount its pin — reopening the class of
+     bug the original `SO_PEERCRED` fix (§1) closed. `Disconnect` therefore
+     still verifies the caller's current namespace via `GetContainerNSPath`
+     first, and only trusts/uses a tracked record's pinned `NSPath` when that
+     record's own `NSInode` matches the inode the caller just proved
+     ownership of; otherwise it falls back to the verified path and leaves
+     the mismatched record untouched.
+   - **Implementation history worth knowing:** the concurrency model went
+     through a channel-based single-goroutine actor rewrite (request/response
+     structs, a `serverLoop` `select`) and was reverted back to the
+     `sync.Mutex` design above after review found it introduced a guaranteed
+     deadlock (a missing channel send), a guaranteed startup panic (a dropped
+     `cleanupInterval` reaching `time.NewTicker(0)`), and coupled the
+     periodic cleanup sweep to the same dispatch loop as live RPCs (so a slow
+     orphan `Teardown` would stall every tenant's `Connect`/`Disconnect`/
+     `Inspect`). The mutex design doesn't have that coupling problem and had
+     no live correctness bugs found against it across three review rounds,
+     so it's the one to keep building on.
+   - **Test coverage: backend logic covered (2026-09-25), kernel side still
+     open.** Every kernel-facing call in `netmanBackend` now goes through the
+     `nsOps` interface (`nsops.go`: `ResolvePath`, `Pin`, `Unpin`, `Inode`,
+     `Isolate`, `Exists`; production impl `kernelNSOps`), so
+     `netman_test.go` can fake it alongside a fake
+     `types.ContainerNetwork` and run unprivileged. It covers `Connect`
+     (pinned-path tracking, unverified-namespace rejection, pin failure,
+     rollback/unpin on failure), `Disconnect` (tracked pinned path,
+     ignoring another tenant's record via the inode-ownership check,
+     untracked fallback, unverified-namespace rejection, record kept on
+     `Teardown` failure), `cleanup`/reconciliation (drops the record even if
+     `Teardown` fails, only touches missing connections), `Inspect`, and
+     `CleanupInterval` rejecting non-positive values. `state_test.go` covers
+     `stateStore`'s put/delete/reload and corrupt-/missing-file recovery.
+     **Still open:** `util_test.go`'s
+     `TestFindNetInterfaceLinkAndIsolateHostPeer` — the only test that ever
+     exercised bridge-port isolation against a real veth/bridge — was
+     deleted when that logic moved into `ContainerLinks.Isolate()`/`Exists()`
+     in `links.go`, and nothing replaces it yet. `kernelNSOps`,
+     `Isolate()`/`Exists()`, and real pin/unmount need root-gated tests
+     (root/`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`, self-skipping otherwise) before
+     relying on this path in CI.
 
 4. Upstream pasta/pesto tracking — not applicable to a code review.
 
@@ -245,8 +374,15 @@ slices.Collect(maps.Keys(statusBlock.Interfaces)))` immediately after
 per-connection authentication. #2 (shared L2 with no isolation between
 tenants) was the next-highest-priority item once #1 closed the
 unauthorized-attach path, and is also fixed 2026-09-17 via bridge port
-isolation. #3 (lifecycle/cleanup robustness) remains open and is now the
-highest-priority remaining item.
+isolation. #3 (lifecycle/cleanup robustness) is functionally fixed as of
+2026-09-25 via daemon-side connection tracking, a periodic cleanup loop,
+`sync.Mutex` serialization, and (the sharpest of several bugs caught along
+the way) pinning `NSPath` to a durable bind mount instead of an ephemeral
+`/proc/<pid>/ns/net` reference. Its backend logic is covered by unprivileged
+unit tests against a faked `nsOps` (2026-09-25); what's *not* yet closed is
+root-gated testing of the kernel side (`kernelNSOps`, `Isolate()`/`Exists()`,
+real pin/unmount) — see the last bullet above — and there's no startup-time
+orphan sweep yet either.
 
 ## Next steps
 
@@ -267,5 +403,29 @@ highest-priority remaining item.
       undesired — implemented via Linux bridge port isolation; confirmed
       missing by code audit (2026-09-15); fixed 2026-09-17; see "Code audit
       findings" above.
-- [ ] Audit daemon cleanup path for veth/bridge-port leaks on container/netns
-      teardown.
+- [x] Audit daemon cleanup path for veth/bridge-port leaks on container/netns
+      teardown — confirmed missing by code audit (2026-09-15); functionally
+      fixed as of 2026-09-25 via daemon-side state tracking (`state.go`,
+      `links.go`), a periodic `cleanupLoop` (`netman.go`), `sync.Mutex`
+      serialization, and pinning `NSPath` to a durable bind mount instead of
+      an ephemeral `/proc/<pid>/ns/net` reference; see "Code audit findings"
+      §3 above for the full history, including a channel-based rewrite that
+      was tried and reverted. The initial implementation plan (superseded by
+      the NSPath-pinning revision) is at
+      `~/.claude/plans/curious-knitting-moth.md`.
+- [x] Unprivileged unit tests for `Connect`/`Disconnect`/`cleanup`/
+      `reconcileOnce`, the pin/unpin lifecycle, and the `Disconnect`
+      inode-ownership check (2026-09-25): every kernel-facing call in
+      `netmanBackend` goes through the `nsOps` interface (`nsops.go`,
+      production impl `kernelNSOps`), faked in `netman_test.go` alongside a
+      fake `types.ContainerNetwork`. Runs as a normal user so VS Code's test
+      runner and coverage work.
+- [ ] Add root-gated tests for the kernel side only — `kernelNSOps` /
+      `ContainerLinks.Isolate()`/`Exists()` and pin/unmount against a real
+      namespace/veth pair/bridge (replacing the deleted
+      `TestFindNetInterfaceLinkAndIsolateHostPeer`). Run with
+      `go test -exec sudo -coverprofile=cover.out ./...` and load the profile
+      in VS Code via "Go: Apply Cover Profile".
+- [ ] Add a startup-time orphan sweep before `cleanupLoop`'s first tick, so a
+      daemon restart doesn't leave crash orphans unreconciled for up to one
+      `cleanupInterval`.
