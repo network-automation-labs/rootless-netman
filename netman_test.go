@@ -64,7 +64,7 @@ func (f *fakeNSOps) ResolvePath(clientPid int, inode uint64) (string, error) {
 	return f.clientPath, nil
 }
 
-func (f *fakeNSOps) Pin(path string) (string, error) {
+func (f *fakeNSOps) Mount(path string) (string, error) {
 	if f.pinErr != nil {
 		return "", f.pinErr
 	}
@@ -72,7 +72,7 @@ func (f *fakeNSOps) Pin(path string) (string, error) {
 	return f.pinnedPath, nil
 }
 
-func (f *fakeNSOps) Unpin(path string) error {
+func (f *fakeNSOps) Unmount(path string) error {
 	f.unpinned = append(f.unpinned, path)
 	return nil
 }

@@ -151,7 +151,7 @@ func (n *netmanBackend) Disconnect(clientPid int, options *TeardownNetworkOption
 	}
 
 	if tracked {
-		if unmountErr := n.ns.Unpin(conn.NSPath); unmountErr != nil {
+		if unmountErr := n.ns.Unmount(conn.NSPath); unmountErr != nil {
 			logrus.Errorf("Failed to unmount pinned namespace %s for %s: %v", conn.NSPath, options.ContainerName, unmountErr)
 		}
 		n.state.Delete(conn)
@@ -180,7 +180,7 @@ func (n *netmanBackend) Connect(clientPid int, options *SetupNetworkOptions) (st
 	// long before the cleanup process ever needs to check on, or tear
 	// down, this connection again. Once pinned, NSPath stays valid
 	// regardless of that pid's fate.
-	nspath, err := n.ns.Pin(verifiedPath)
+	nspath, err := n.ns.Mount(verifiedPath)
 	if err != nil {
 		logrus.Errorf("Failed to pin namespace for %s: %v", options.ContainerName, err)
 		return statusBlock, err
@@ -188,7 +188,7 @@ func (n *netmanBackend) Connect(clientPid int, options *SetupNetworkOptions) (st
 	tracked := false
 	defer func() {
 		if !tracked {
-			if unmountErr := n.ns.Unpin(nspath); unmountErr != nil {
+			if unmountErr := n.ns.Unmount(nspath); unmountErr != nil {
 				logrus.Errorf("Failed to unmount pinned namespace %s for %s: %v", nspath, options.ContainerName, unmountErr)
 			}
 		}
@@ -246,7 +246,7 @@ func (n *netmanBackend) cleanupLinks(conn ContainerLinks) {
 	if err := n.containerNetwork.Teardown(conn.NSPath, types.TeardownOptions{NetworkOptions: networkOptions}); err != nil {
 		logrus.Errorf("Best-effort teardown failed for orphaned connection %s: %v", conn, err)
 	}
-	if err := n.ns.Unpin(conn.NSPath); err != nil {
+	if err := n.ns.Unmount(conn.NSPath); err != nil {
 		logrus.Errorf("Failed to unmount pinned namespace %s for orphaned connection %s: %v", conn.NSPath, conn, err)
 	}
 	n.state.Delete(conn)

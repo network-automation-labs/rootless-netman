@@ -12,11 +12,11 @@ type nsOps interface {
 	// ResolvePath returns the netns path of clientPid, but only if that
 	// namespace's inode matches inode.
 	ResolvePath(clientPid int, inode uint64) (string, error)
-	// Pin bind-mounts the namespace at path to a durable file and returns
+	// Mount bind-mounts the namespace at path to a durable file and returns
 	// the pinned path.
-	Pin(path string) (string, error)
-	// Unpin releases a path previously returned by Pin.
-	Unpin(path string) error
+	Mount(path string) (string, error)
+	// Unmount releases a path previously returned by Pin.
+	Unmount(path string) error
 	Inode(path string) (uint64, error)
 	Isolate(links ContainerLinks) error
 	Exists(links ContainerLinks) bool
@@ -28,11 +28,11 @@ func (kernelNSOps) ResolvePath(clientPid int, inode uint64) (string, error) {
 	return GetContainerNSPath(clientPid, inode)
 }
 
-func (kernelNSOps) Pin(path string) (string, error) {
+func (kernelNSOps) Mount(path string) (string, error) {
 	return podmannetns.NewNSFrom(path)
 }
 
-func (kernelNSOps) Unpin(path string) error {
+func (kernelNSOps) Unmount(path string) error {
 	return podmannetns.UnmountNS(path)
 }
 
