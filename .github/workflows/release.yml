@@ -26,6 +26,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
       # More assembly might be required: Docker logins, GPG, etc.
       # It all depends on your needs.
       - name: Run GoReleaser
@@ -37,4 +43,10 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Publishing with the default GITHUB_TOKEN would attribute the
+          # release to github-actions[bot], and GitHub does not fire
+          # downstream workflow events (e.g. notify-package-repo's
+          # `release: published` trigger) for events created by the
+          # default GITHUB_TOKEN. Use the app token instead so the release
+          # actually triggers it.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
