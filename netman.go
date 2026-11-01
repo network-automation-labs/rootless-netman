@@ -96,6 +96,7 @@ func getSetupOptions(options *SetupNetworkOptions) types.NetworkOptions {
 	return types.NetworkOptions{
 		ContainerID:   options.ContainerID,
 		ContainerName: options.ContainerName,
+		PortMappings:  slices.Clone(options.PortMappings),
 		Networks: map[string]types.PerNetworkOptions{
 			options.Network.Name: options.NetworkOptions,
 		},
@@ -167,8 +168,7 @@ func (n *netmanBackend) Connect(clientPid int, options *SetupNetworkOptions) (st
 	}
 
 	if logrus.IsLevelEnabled(logrus.DebugLevel) {
-		logrus.Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)
-		logrus.Debugf("Connect options received: %+v", options)
+		logrus.WithField("options", options).Debugf("Connecting %s to %s", options.ContainerName, options.Network.Name)
 	}
 
 	n.mu.Lock()
@@ -196,6 +196,8 @@ func (n *netmanBackend) Connect(clientPid int, options *SetupNetworkOptions) (st
 
 	networkOptions := getSetupOptions(options)
 	var statusBlocks map[string]types.StatusBlock
+	logrus.WithField("networkOptions", networkOptions).Debug("Passing options to upstream netavark provider")
+
 	statusBlocks, err = n.containerNetwork.Setup(nspath, types.SetupOptions{NetworkOptions: networkOptions})
 	statusBlock = statusBlocks[options.Network.Name]
 
