@@ -71,10 +71,20 @@ A custom solution to bridge rootless netns's into a rootful network:
     network namespace where a single **Traefik** reverse proxy runs,
     proxying traffic for multiple apps, each running as a different
     rootless user.
-- **Current limitation**: the custom driver does not yet implement port
-  forwarding, to avoid conflicting with pasta's own port
-  forwarding/listening setup. Next step is to add port forwarding on the
-  bridged interface itself.
+- **Port forwarding on the bridged interface — implemented 2026-11-01.**
+  Podman/netavark already captures a container's published ports as
+  `PortMappings` and hands them to this plugin via the standard netavark
+  plugin protocol (`SetupNetworkOptions.PortMappings`, `types.go`); this repo
+  simply passes that straight through to the vendored
+  `go.podman.io/common/libnetwork/netavark` bridge driver's own `Setup`/
+  `Teardown` calls (`getSetupOptions` in `netman.go`), unconditionally, for
+  whatever network this plugin is handling. That driver already creates the
+  real veth pair bridged onto `podman1` as root and has its own built-in
+  nftables DNAT port-forwarding for `PortMappings`, so no new nftables/
+  netlink code was needed — this is pure passthrough of what podman/netavark
+  already provided. No new configuration, opt-in flag, or network driver
+  option was introduced; whatever ports podman tells this plugin's network
+  to publish, it publishes.
 
 ## Architecture review notes / open concerns
 
@@ -386,15 +396,20 @@ orphan sweep yet either.
 
 ## Next steps
 
-- [ ] Implement port forwarding in the custom netavark driver, operating on
-      the bridged rootful/rootless interface (not via pasta), since pasta's
-      default `-t none -u none -T none -U none` already means it won't
-      interfere as long as the default-network compose services don't
-      declare `ports:`.
+- [x] Implement port forwarding in the custom netavark driver, operating on
+      the bridged rootful/rootless interface (not via pasta) — implemented
+      2026-11-01 by passing `PortMappings` straight through (unconditionally,
+      no new config) into the existing vendored netavark bridge driver's
+      `Setup`/`Teardown` calls; see "Custom architecture" above for the
+      mechanism.
 - [ ] Decide whether default-network compose services should ever use
       `-p`/`ports:` at all, or whether all external exposure should route
       exclusively through the custom bridged network + Traefik (simplest,
-      avoids any pasta/custom-driver conflict).
+      avoids any pasta/custom-driver conflict). Since port forwarding is now
+      unconditional on whichever network(s) a container's `PortMappings`
+      reach, declaring `-p` on both the default and external networks for
+      the same port would double-publish it — this decision is what avoids
+      that, not anything in the code.
 - [x] Add UID/PID verification (`SO_PEERCRED`) to the root daemon's request
       handling — confirmed missing by code audit (2026-09-15); fixed
       2026-09-17; see "Code audit findings" above.
