@@ -414,6 +414,30 @@ func TestCleanupCleansOnlyMissingConnections(t *testing.T) {
 	assertTracked(t, b, "dead", false)
 }
 
+// TestCleanupLoopSweepsImmediatelyOnStartup covers the startup-time orphan
+// sweep: cleanupLoop must clean up an existing orphan before its first
+// ticker fire, not wait a full cleanupInterval for it. The interval here is
+// deliberately long so the ticker cannot be what triggers the cleanup within
+// the test's deadline.
+func TestCleanupLoopSweepsImmediatelyOnStartup(t *testing.T) {
+	b := newTestBackend(t)
+	b.cleanupInterval = time.Hour
+	const deadPath = "/run/netns/dead"
+	b.state.Put(trackedLinks("dead", deadPath, testInode))
+	b.ns.missing = map[string]bool{deadPath: true}
+
+	go b.cleanupLoop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, tracked := b.state.Get("dead", testNetwork); !tracked {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("cleanupLoop did not sweep the orphan before its first tick")
+}
+
 func TestCleanupIntervalRejectsNonPositive(t *testing.T) {
 	for _, interval := range []time.Duration{0, -time.Second} {
 		if err := CleanupInterval(interval)(&netmanBackend{}); err == nil {

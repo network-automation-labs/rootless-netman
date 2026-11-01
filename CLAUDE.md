@@ -107,10 +107,10 @@ Raised as things to verify/harden, not blockers:
    veth pairs when a rootless netns disappears (container removed, `compose
 down`, user logout, crash) to avoid leaked veth ends/bridge ports.
    Also consider races from concurrent `compose up/down` across users.
-   **Functionally fixed as of 2026-09-25 — see "Code audit findings" § 3
-   below; unprivileged unit tests landed 2026-09-25, but root-gated
-   kernel-side tests and a startup-time orphan sweep remain open, see "Next
-   steps".**
+   **Functionally fixed as of 2026-09-25, with the startup-time orphan
+   sweep added 2026-11-01 — see "Code audit findings" § 3 below;
+   unprivileged unit tests landed 2026-09-25, but root-gated kernel-side
+   tests remain open, see "Next steps".**
 4. Noted for context: upstream Podman networking docs already recognize
    "pasta + custom network" as a valid combination, and there's active
    upstream work (PR for `rootless_port_forwarder="pasta"` /
@@ -376,6 +376,16 @@ slices.Collect(maps.Keys(statusBlock.Interfaces)))` immediately after
      `Isolate()`/`Exists()`, and real pin/unmount need root-gated tests
      (root/`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`, self-skipping otherwise) before
      relying on this path in CI.
+   - **Startup-time orphan sweep — added 2026-11-01.** `cleanupLoop`
+     (`netman.go`) previously started its `time.Ticker` and waited for the
+     first tick before ever calling `cleanup()`, so a daemon restart left
+     any crash orphans (a connection whose client died, or whose RPC never
+     reached this daemon before a prior process exit) unreconciled for up
+     to one `cleanupInterval`. `cleanupLoop` now calls `cleanup()` once,
+     synchronously, before entering the ticker loop. Covered by
+     `TestCleanupLoopSweepsImmediatelyOnStartup` (`netman_test.go`), which
+     uses a 1-hour `cleanupInterval` to prove the sweep isn't waiting on the
+     ticker.
 
 4. Upstream pasta/pesto tracking — not applicable to a code review.
 
@@ -389,10 +399,10 @@ isolation. #3 (lifecycle/cleanup robustness) is functionally fixed as of
 `sync.Mutex` serialization, and (the sharpest of several bugs caught along
 the way) pinning `NSPath` to a durable bind mount instead of an ephemeral
 `/proc/<pid>/ns/net` reference. Its backend logic is covered by unprivileged
-unit tests against a faked `nsOps` (2026-09-25); what's *not* yet closed is
-root-gated testing of the kernel side (`kernelNSOps`, `Isolate()`/`Exists()`,
-real pin/unmount) — see the last bullet above — and there's no startup-time
-orphan sweep yet either.
+unit tests against a faked `nsOps` (2026-09-25), and the startup-time orphan
+sweep was added 2026-11-01. What's *not* yet closed is root-gated testing of
+the kernel side (`kernelNSOps`, `Isolate()`/`Exists()`, real pin/unmount) —
+see the bullets above.
 
 ## Next steps
 
@@ -441,6 +451,10 @@ orphan sweep yet either.
       `TestFindNetInterfaceLinkAndIsolateHostPeer`). Run with
       `go test -exec sudo -coverprofile=cover.out ./...` and load the profile
       in VS Code via "Go: Apply Cover Profile".
-- [ ] Add a startup-time orphan sweep before `cleanupLoop`'s first tick, so a
+- [x] Add a startup-time orphan sweep before `cleanupLoop`'s first tick, so a
       daemon restart doesn't leave crash orphans unreconciled for up to one
-      `cleanupInterval`.
+      `cleanupInterval` — implemented 2026-11-01: `cleanupLoop` (`netman.go`)
+      now calls `cleanup()` once immediately before starting the ticker.
+      Covered by `TestCleanupLoopSweepsImmediatelyOnStartup`, which uses a
+      1-hour `cleanupInterval` to prove the sweep isn't waiting on the
+      ticker.

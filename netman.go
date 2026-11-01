@@ -264,11 +264,16 @@ func (n *netmanBackend) cleanup() {
 	}
 }
 
-// cleanupLoop runs reconcileOnce on a timer for the lifetime of the
+// cleanupLoop sweeps for orphans immediately, so a daemon restart doesn't
+// leave crash orphans (connections whose client died or whose RPC never
+// reached this daemon before a prior process exit) unreconciled for up to
+// one cleanupInterval, then runs cleanup on a timer for the lifetime of the
 // process. There is no stop channel: this matches the rest of the daemon's
 // lifecycle (a long-running systemd service with no graceful-shutdown path
 // today).
 func (n *netmanBackend) cleanupLoop() {
+	n.cleanup()
+
 	ticker := time.NewTicker(n.cleanupInterval)
 	defer ticker.Stop()
 	for range ticker.C {
