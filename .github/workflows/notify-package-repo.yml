@@ -2,6 +2,7 @@
 name: notify-package-repo
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -13,9 +14,9 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.APP_ID }}
+          client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: network-automation-labs
+          owner: ${{ github.repository_owner }}
           repositories: network-automation-labs.github.io
 
       - name: Notify package repo of new release
