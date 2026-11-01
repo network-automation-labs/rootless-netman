@@ -1,0 +1,27 @@
+# .github/workflows/notify-package-repo.yml
+name: notify-package-repo
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-package-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: network-automation-labs
+          repositories: network-automation-labs.github.io
+
+      - name: Notify package repo of new release
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/network-automation-labs/network-automation-labs.github.io/dispatches \
+            -d '{"event_type":"package-released","client_payload":{"repository":"${{ github.repository }}","tag":"${{ github.event.release.tag_name }}"}}'
