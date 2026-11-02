@@ -17,7 +17,6 @@ jobs:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: network-automation-labs.github.io
 
       - name: Notify package repo of new release
         run: |
